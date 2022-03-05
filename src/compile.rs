@@ -1,16 +1,18 @@
 use actix_web::{post, web, HttpRequest, HttpResponse};
 use cargo::{
     core::{compiler::CompileMode, Workspace},
-    ops::{compile, CompileOptions},
+    ops,
+    ops::{CompileOptions, NewOptions},
     util::Config,
 };
 use log::info;
 use reqwest::Client;
 use serde::Deserialize;
+use std::fs::{metadata, File};
+use std::io::Read;
 use std::path::Path;
 use std::{path::PathBuf, sync::Mutex};
-use std::fs::{File, metadata};
-use std::io::Read;
+use tempdir::TempDir;
 pub struct WorkerClient {
     pub client: Client,
 }
@@ -34,10 +36,19 @@ async fn compile_handler(
     worker_client: HttpRequest,
 ) -> HttpResponse {
     let config = Config::default().unwrap();
-    let manifest_path = Path::new("/home/titaneric/sources/actor-playground/compile_target/Cargo.toml");
-    let workspace = Workspace::new(manifest_path.into(), &config).unwrap();
+
+    // create tmp cargo package
+    let tmp_dir = TempDir::new("rust-build").unwrap();
+    let cargo_tmp = tmp_dir.into_path().join("cargo");
+    let new_option =
+        NewOptions::new(None, true, false, cargo_tmp.clone(), None, None, None).unwrap();
+    ops::new(&new_option, &config).unwrap();
+
+    // build it
+    let manifest_path = cargo_tmp.join("Cargo.toml");
+    let workspace = Workspace::new(&manifest_path.as_path(), &config).unwrap();
     let compile_option = CompileOptions::new(&config, CompileMode::Build).unwrap();
-    let compile_result = compile(&workspace, &compile_option).unwrap();
+    let compile_result = ops::compile(&workspace, &compile_option).unwrap();
     let built_binary_paths = compile_result
         .binaries
         .iter()
