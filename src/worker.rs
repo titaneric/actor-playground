@@ -1,4 +1,4 @@
-mod compile;
+mod run;
 use actix_web::{get, middleware, App, HttpResponse, HttpServer, Responder};
 
 #[get("/")]
@@ -13,10 +13,10 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(|| {
         App::new()
             .wrap(middleware::Logger::default())
+            .service(run::run_handler)
             .service(hello)
-            .service(compile::echo)
     })
-    .bind(("127.0.0.1", 8080))?
+    .bind(("127.0.0.1", 7070))?
     .run()
     .await
 }
