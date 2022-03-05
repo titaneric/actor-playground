@@ -1,30 +1,15 @@
 mod compile;
-use std::sync::Mutex;
-use actix_web::{get, middleware, App, web, HttpResponse, HttpServer, Responder};
-use awc::{Connector, Client};
-
-
-// struct WorkerClient {
-//     client: Mutex<Client>,
-// }
-
-// impl WorkerClient {
-//     fn new() -> WorkerClient {
-//         WorkerClient {
-//             client: Mutex::new(Client::new())
-//         }
-//     }
-// }
+use actix_web::{get, middleware, web, App, HttpResponse, HttpServer, Responder};
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "info");
     env_logger::init();
-    // let wc = web::Data::new(WorkerClient::new());
+    let wc = web::Data::new(compile::WorkerClient::new());
 
-    HttpServer::new(move|| {
+    HttpServer::new(move || {
         App::new()
-        // .app_data(wc.clone())
+            .app_data(wc.clone())
             .wrap(middleware::Logger::default())
             .service(hello)
             .service(compile::compile_handler)
