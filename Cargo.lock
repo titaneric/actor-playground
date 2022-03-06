@@ -230,6 +230,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "syn",
  "tempdir",
 ]
 

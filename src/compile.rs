@@ -1,19 +1,21 @@
 use actix_web::{post, web, HttpRequest, HttpResponse};
 use cargo::{
     core::{compiler::CompileMode, Workspace},
-    ops,
-    ops::{CompileOptions, NewOptions},
+    ops::{self, CompileOptions, NewOptions},
     util::Config,
 };
-use log::info;
+use log::{info, debug};
 use reqwest::Client;
 use serde::Deserialize;
-use std::io::Read;
+use std::{io::Read, fs::read_to_string};
 use std::sync::Mutex;
 use std::{
     collections::HashMap,
     fs::{metadata, File},
+    path::Path,
 };
+use syn::visit::{self, Visit};
+use syn::{File as SynFile, ItemFn};
 use tempdir::TempDir;
 pub struct WorkerClient {
     pub client: Mutex<Client>,
@@ -64,7 +66,6 @@ fn get_file_as_byte_vec(filename: &String) -> Vec<u8> {
     let metadata = metadata(&filename).expect("unable to read metadata");
     let mut buffer = vec![0; metadata.len() as usize];
     f.read(&mut buffer).expect("buffer overflow");
-
     buffer
 }
 async fn create_compile_sandbox() -> Vec<u8> {
@@ -86,6 +87,7 @@ async fn create_compile_sandbox() -> Vec<u8> {
     let new_option =
         NewOptions::new(None, true, false, cargo_tmp.clone(), None, None, None).unwrap();
     ops::new(&new_option, &config).unwrap();
+    parse_src(cargo_tmp.as_path().join("src").join("main.rs").as_path());
 
     // build it
     let manifest_path = cargo_tmp.join("Cargo.toml");
@@ -97,5 +99,26 @@ async fn create_compile_sandbox() -> Vec<u8> {
         .iter()
         .map(|unit_output| unit_output.path.to_str().unwrap())
         .collect::<Vec<&str>>();
+
     get_file_as_byte_vec(&String::from(built_binary_paths[0]))
+}
+
+
+struct FnVisitor;
+
+impl<'ast> Visit<'ast> for FnVisitor {
+    fn visit_item_fn(&mut self, node: &'ast ItemFn) {
+        println!("Function with name={}", node.sig.ident);
+
+        // Delegate to the default impl to visit any nested functions.
+        visit::visit_item_fn(self, node);
+    }
+}
+
+fn parse_src(src_code_path: &Path) {
+    let src_code = read_to_string(src_code_path).unwrap();
+    let ast: syn::File = syn::parse_str(&src_code).unwrap();
+    info!("{:#?}", ast);
+    FnVisitor.visit_file(&ast);
+
 }
