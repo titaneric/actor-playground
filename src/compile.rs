@@ -8,19 +8,21 @@ use cargo::{
 use log::info;
 use reqwest::Client;
 use serde::Deserialize;
-use std::fs::{metadata, File};
 use std::io::Read;
-use std::path::Path;
-use std::{path::PathBuf, sync::Mutex};
+use std::sync::Mutex;
+use std::{
+    collections::HashMap,
+    fs::{metadata, File},
+};
 use tempdir::TempDir;
 pub struct WorkerClient {
-    pub client: Client,
+    pub client: Mutex<Client>,
 }
 
 impl WorkerClient {
     pub fn new() -> WorkerClient {
         WorkerClient {
-            client: Client::new(),
+            client: Mutex::new(Client::new()),
         }
     }
 }
@@ -35,11 +37,52 @@ async fn compile_handler(
     compile_req: web::Json<CompileReq>,
     worker_client: HttpRequest,
 ) -> HttpResponse {
-    let config = Config::default().unwrap();
+    let built_binary = create_compile_sandbox().await;
+
+    let request = serde_json::json!({
+        "built_binary":built_binary,
+    });
+    let client = &worker_client
+        .app_data::<web::Data<WorkerClient>>()
+        .unwrap()
+        .client;
+
+    client
+        .lock()
+        .unwrap()
+        .post(WORKER_URL)
+        .json(&request)
+        .send()
+        .await
+        .unwrap();
+
+    info!("Welcome {}!", compile_req.code);
+    HttpResponse::Ok().json("ok")
+}
+fn get_file_as_byte_vec(filename: &String) -> Vec<u8> {
+    let mut f = File::open(&filename).expect("no file found");
+    let metadata = metadata(&filename).expect("unable to read metadata");
+    let mut buffer = vec![0; metadata.len() as usize];
+    f.read(&mut buffer).expect("buffer overflow");
+
+    buffer
+}
+async fn create_compile_sandbox() -> Vec<u8> {
+    let mut config = Config::default().unwrap();
+    let build_config = {
+        let mut map = HashMap::new();
+        map.insert(
+            String::from("RUSTC_WRAPPER"),
+            String::from("/home/titaneric/.cargo/bin/sccache"),
+        );
+        map
+    };
+    config.set_env(build_config);
 
     // create tmp cargo package
     let tmp_dir = TempDir::new("rust-build").unwrap();
-    let cargo_tmp = tmp_dir.into_path().join("cargo");
+    // let cargo_tmp = tmp_dir.into_path().join("cargo");
+    let cargo_tmp = tmp_dir.into_path().join("playground");
     let new_option =
         NewOptions::new(None, true, false, cargo_tmp.clone(), None, None, None).unwrap();
     ops::new(&new_option, &config).unwrap();
@@ -54,26 +97,5 @@ async fn compile_handler(
         .iter()
         .map(|unit_output| unit_output.path.to_str().unwrap())
         .collect::<Vec<&str>>();
-    info!("{:?}!", built_binary_paths);
-
-    let request = serde_json::json!({
-        "built_binary":get_file_as_byte_vec(&String::from(built_binary_paths[0])),
-    });
-    let client = &worker_client
-        .app_data::<web::Data<WorkerClient>>()
-        .unwrap()
-        .client;
-
-    client.post(WORKER_URL).json(&request).send().await.unwrap();
-
-    info!("Welcome {}!", compile_req.code);
-    HttpResponse::Ok().json("ok")
-}
-fn get_file_as_byte_vec(filename: &String) -> Vec<u8> {
-    let mut f = File::open(&filename).expect("no file found");
-    let metadata = metadata(&filename).expect("unable to read metadata");
-    let mut buffer = vec![0; metadata.len() as usize];
-    f.read(&mut buffer).expect("buffer overflow");
-
-    buffer
+    get_file_as_byte_vec(&String::from(built_binary_paths[0]))
 }
