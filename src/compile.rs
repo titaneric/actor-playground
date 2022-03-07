@@ -4,17 +4,23 @@ use cargo::{
     ops::{self, CompileOptions, NewOptions},
     util::Config,
 };
-use log::{info, debug};
+use log::{debug, info};
+use proc_macro2::Span;
+use quote::quote;
 use reqwest::Client;
 use serde::Deserialize;
-use std::{io::Read, fs::read_to_string};
 use std::sync::Mutex;
 use std::{
     collections::HashMap,
     fs::{metadata, File},
     path::Path,
 };
-use syn::visit::{self, Visit};
+use std::{fs::read_to_string, io::Read};
+use syn::fold::Fold;
+use syn::{
+    token::Pub,
+    VisPublic, Visibility,
+};
 use syn::{File as SynFile, ItemFn};
 use tempdir::TempDir;
 pub struct WorkerClient {
@@ -103,22 +109,40 @@ async fn create_compile_sandbox() -> Vec<u8> {
     get_file_as_byte_vec(&String::from(built_binary_paths[0]))
 }
 
+struct PublicizeMainFn;
 
-struct FnVisitor;
-
-impl<'ast> Visit<'ast> for FnVisitor {
-    fn visit_item_fn(&mut self, node: &'ast ItemFn) {
-        println!("Function with name={}", node.sig.ident);
-
-        // Delegate to the default impl to visit any nested functions.
-        visit::visit_item_fn(self, node);
+impl Fold for PublicizeMainFn {
+    fn fold_file(&mut self, file: SynFile) -> SynFile {
+        SynFile {
+            items: file
+                .items
+                .iter()
+                .map(|item| match item {
+                    syn::Item::Fn(item_fn) => self.fold_item_fn(item_fn.to_owned()).into(),
+                    _ => item.to_owned(),
+                })
+                .collect(),
+            ..file
+        }
+    }
+    fn fold_item_fn(&mut self, item_fn: ItemFn) -> ItemFn {
+        match item_fn.sig.ident.to_string().as_str() {
+            "main" => ItemFn {
+                vis: Visibility::Public(VisPublic {
+                    pub_token: Pub {
+                        span: Span::call_site(),
+                    },
+                }),
+                ..item_fn
+            },
+            _ => item_fn,
+        }
     }
 }
-
 fn parse_src(src_code_path: &Path) {
     let src_code = read_to_string(src_code_path).unwrap();
-    let ast: syn::File = syn::parse_str(&src_code).unwrap();
+    let ast: SynFile = syn::parse_str(&src_code).unwrap();
     info!("{:#?}", ast);
-    FnVisitor.visit_file(&ast);
-
+    let revised_main_fn = PublicizeMainFn.fold_file(ast);
+    info!("{}", quote! {#revised_main_fn});
 }
