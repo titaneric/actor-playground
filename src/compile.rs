@@ -1,21 +1,22 @@
 use actix_web::{post, web, HttpRequest, HttpResponse};
 use cargo::{
-    core::{compiler::CompileMode, Workspace},
+    core::{compiler::CompileMode, Workspace, Shell},
     ops::{self, CompileOptions, NewOptions},
-    util::Config,
+    util::{Config,
+    config::{ConfigValue, Definition, }}
 };
 use log::{debug, info};
 use proc_macro2::Span;
 use quote::quote;
 use reqwest::Client;
 use serde::Deserialize;
-use std::sync::Mutex;
+use std::{sync::Mutex, io::Write};
 use std::{
     collections::HashMap,
     fs::{metadata, File},
     path::Path,
 };
-use std::{fs::read_to_string, io::Read};
+use std::{fs::read_to_string, io::Read, env};
 use syn::fold::Fold;
 use syn::{
     token::Pub,
@@ -45,7 +46,7 @@ async fn compile_handler(
     compile_req: web::Json<CompileReq>,
     worker_client: HttpRequest,
 ) -> HttpResponse {
-    let built_binary = create_compile_sandbox().await;
+    let built_binary = create_compile_sandbox(compile_req.code.clone()).await;
 
     let request = serde_json::json!({
         "built_binary":built_binary,
@@ -64,7 +65,7 @@ async fn compile_handler(
         .await
         .unwrap();
 
-    info!("Welcome {}!", compile_req.code);
+    // info!("Welcome {}!", compile_req.code);
     HttpResponse::Ok().json("ok")
 }
 fn get_file_as_byte_vec(filename: &String) -> Vec<u8> {
@@ -74,26 +75,42 @@ fn get_file_as_byte_vec(filename: &String) -> Vec<u8> {
     f.read(&mut buffer).expect("buffer overflow");
     buffer
 }
-async fn create_compile_sandbox() -> Vec<u8> {
-    let mut config = Config::default().unwrap();
-    let build_config = {
-        let mut map = HashMap::new();
-        map.insert(
-            String::from("RUSTC_WRAPPER"),
-            String::from("/home/titaneric/.cargo/bin/sccache"),
-        );
-        map
-    };
-    config.set_env(build_config);
+fn write_src_code(src_code: String, filename: &Path) {
+    let mut f = File::create(&filename).expect("no file found");
+    f.write_all(&src_code.into_bytes()).unwrap();
+
+
+}
+async fn create_compile_sandbox(src_code: String) -> Vec<u8> {
+
+    
 
     // create tmp cargo package
     let tmp_dir = TempDir::new("rust-build").unwrap();
-    // let cargo_tmp = tmp_dir.into_path().join("cargo");
-    let cargo_tmp = tmp_dir.into_path().join("playground");
+
+    env::set_var("CARGO_INCREMENTAL", "false");
+    env::set_var("RUSTC_WRAPPER", "/home/titaneric/.cargo/bin/sccache");
+
+    const PLAYGROUND_PACKAGE_NAME: &str = "playground";
+    const PLAYGROUND_MAIN_FN: &str = r#"
+        fn main() {
+            playground::main();
+        }
+    "#;
+
+
+    let config = Config::default().unwrap();
+    let cargo_tmp = tmp_dir.into_path().join(PLAYGROUND_PACKAGE_NAME);
     let new_option =
-        NewOptions::new(None, true, false, cargo_tmp.clone(), None, None, None).unwrap();
+        NewOptions::new(None, false, true, cargo_tmp.clone(), None, None, None).unwrap();
     ops::new(&new_option, &config).unwrap();
-    parse_src(cargo_tmp.as_path().join("src").join("main.rs").as_path());
+    // let modified_main_fn = parse_src(cargo_tmp.as_path().join("src").join("main.rs").as_path());
+    let modified_main_fn = parse_src(src_code);
+    write_src_code(modified_main_fn, cargo_tmp.as_path().join("src").join("lib.rs").as_path());
+    write_src_code(String::from(PLAYGROUND_MAIN_FN), cargo_tmp.as_path().join("src").join("main.rs").as_path());
+
+
+
 
     // build it
     let manifest_path = cargo_tmp.join("Cargo.toml");
@@ -139,10 +156,12 @@ impl Fold for PublicizeMainFn {
         }
     }
 }
-fn parse_src(src_code_path: &Path) {
-    let src_code = read_to_string(src_code_path).unwrap();
+fn parse_src(src_code: String) -> String {
+    // let src_code = read_to_string(src_code_path).unwrap();
     let ast: SynFile = syn::parse_str(&src_code).unwrap();
-    info!("{:#?}", ast);
-    let revised_main_fn = PublicizeMainFn.fold_file(ast);
-    info!("{}", quote! {#revised_main_fn});
+    // info!("{:#?}", ast);
+    let modified_main_fn = PublicizeMainFn.fold_file(ast);
+    info!("{}", quote! {#modified_main_fn});
+    let modified_main_fn: String = quote! {#modified_main_fn}.to_string();
+    modified_main_fn
 }
