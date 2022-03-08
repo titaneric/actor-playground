@@ -1,27 +1,27 @@
-use actix_web::{post, web, HttpRequest, HttpResponse};
+use actix_web::{post, web, HttpRequest, Responder, Result};
 use cargo::{
-    core::{compiler::CompileMode, Workspace, Shell},
+    core::{compiler::CompileMode, Shell, Workspace},
     ops::{self, CompileOptions, NewOptions},
-    util::{Config,
-    config::{ConfigValue, Definition, }}
+    util::{
+        config::{ConfigValue, Definition},
+        Config,
+    },
 };
+use futures::TryFutureExt;
 use log::{debug, info};
 use proc_macro2::Span;
 use quote::quote;
 use reqwest::Client;
-use serde::Deserialize;
-use std::{sync::Mutex, io::Write};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fs::{metadata, File},
     path::Path,
 };
-use std::{fs::read_to_string, io::Read, env};
+use std::{env, fs::read_to_string, io::Read};
+use std::{io::Write, sync::Mutex};
 use syn::fold::Fold;
-use syn::{
-    token::Pub,
-    VisPublic, Visibility,
-};
+use syn::{token::Pub, VisPublic, Visibility};
 use syn::{File as SynFile, ItemFn};
 use tempdir::TempDir;
 pub struct WorkerClient {
@@ -41,11 +41,15 @@ const WORKER_URL: &str = "http://localhost:7070/run";
 struct CompileReq {
     code: String,
 }
+#[derive(Deserialize, Serialize)]
+struct CompileResponse {
+    stdout: String,
+}
 #[post("/compile")]
 async fn compile_handler(
     compile_req: web::Json<CompileReq>,
     worker_client: HttpRequest,
-) -> HttpResponse {
+) -> Result<impl Responder> {
     let built_binary = create_compile_sandbox(compile_req.code.clone()).await;
 
     let request = serde_json::json!({
@@ -56,7 +60,7 @@ async fn compile_handler(
         .unwrap()
         .client;
 
-    client
+    let stdout = client
         .lock()
         .unwrap()
         .post(WORKER_URL)
@@ -64,27 +68,23 @@ async fn compile_handler(
         .send()
         .await
         .unwrap();
+    let res = stdout.json::<CompileResponse>().await.unwrap();
 
     // info!("Welcome {}!", compile_req.code);
-    HttpResponse::Ok().json("ok")
+    Ok(web::Json(res))
 }
-fn get_file_as_byte_vec(filename: &String) -> Vec<u8> {
+fn get_file_as_byte_vec(filename: &str) -> Vec<u8> {
     let mut f = File::open(&filename).expect("no file found");
     let metadata = metadata(&filename).expect("unable to read metadata");
     let mut buffer = vec![0; metadata.len() as usize];
-    f.read(&mut buffer).expect("buffer overflow");
+    f.read_exact(&mut buffer).expect("buffer overflow");
     buffer
 }
 fn write_src_code(src_code: String, filename: &Path) {
     let mut f = File::create(&filename).expect("no file found");
     f.write_all(&src_code.into_bytes()).unwrap();
-
-
 }
 async fn create_compile_sandbox(src_code: String) -> Vec<u8> {
-
-    
-
     // create tmp cargo package
     let tmp_dir = TempDir::new("rust-build").unwrap();
 
@@ -98,7 +98,6 @@ async fn create_compile_sandbox(src_code: String) -> Vec<u8> {
         }
     "#;
 
-
     let config = Config::default().unwrap();
     let cargo_tmp = tmp_dir.into_path().join(PLAYGROUND_PACKAGE_NAME);
     let new_option =
@@ -106,15 +105,18 @@ async fn create_compile_sandbox(src_code: String) -> Vec<u8> {
     ops::new(&new_option, &config).unwrap();
     // let modified_main_fn = parse_src(cargo_tmp.as_path().join("src").join("main.rs").as_path());
     let modified_main_fn = parse_src(src_code);
-    write_src_code(modified_main_fn, cargo_tmp.as_path().join("src").join("lib.rs").as_path());
-    write_src_code(String::from(PLAYGROUND_MAIN_FN), cargo_tmp.as_path().join("src").join("main.rs").as_path());
-
-
-
+    write_src_code(
+        modified_main_fn,
+        cargo_tmp.as_path().join("src").join("lib.rs").as_path(),
+    );
+    write_src_code(
+        String::from(PLAYGROUND_MAIN_FN),
+        cargo_tmp.as_path().join("src").join("main.rs").as_path(),
+    );
 
     // build it
     let manifest_path = cargo_tmp.join("Cargo.toml");
-    let workspace = Workspace::new(&manifest_path.as_path(), &config).unwrap();
+    let workspace = Workspace::new(manifest_path.as_path(), &config).unwrap();
     let compile_option = CompileOptions::new(&config, CompileMode::Build).unwrap();
     let compile_result = ops::compile(&workspace, &compile_option).unwrap();
     let built_binary_paths = compile_result

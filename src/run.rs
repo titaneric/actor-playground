@@ -1,7 +1,7 @@
-use actix_web::{post, web, HttpResponse};
+use actix_web::{post, web, HttpResponse,Responder, Result};
 use futures::StreamExt;
 use log::info;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
@@ -17,8 +17,12 @@ use tokio::process::Command;
 struct RunReq {
     built_binary: Vec<u8>,
 }
+#[derive(Deserialize, Serialize)]
+struct RunResponse {
+    stdout: String,
+}
 #[post("/run")]
-async fn run_handler(mut body: web::Payload) -> HttpResponse {
+async fn run_handler(mut body: web::Payload) -> Result<impl Responder> {
     let mut bytes = web::BytesMut::new();
     while let Some(item) = body.next().await {
         let item = item.unwrap();
@@ -36,7 +40,7 @@ async fn run_handler(mut body: web::Payload) -> HttpResponse {
     // info!("{:?}", std::str::from_utf8(&output.stderr));
     // info!("{:?}", output.status);
 
-    HttpResponse::Ok().json(stdout)
+    Ok(web::Json(RunResponse{stdout: stdout.to_string()}))
 }
 fn write_byte_stream(buf: &[u8], filename: &str) -> PathBuf {
     let tmp_dir = TempDir::new("rust-run").unwrap();
