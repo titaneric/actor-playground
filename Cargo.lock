@@ -234,6 +234,7 @@ dependencies = [
  "serde_json",
  "syn",
  "tempdir",
+ "tokio",
 ]
 
 [[package]]
