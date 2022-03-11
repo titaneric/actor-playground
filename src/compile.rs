@@ -1,14 +1,13 @@
-use actix_web::{post, web, HttpRequest, Responder, Result};
+use actix_web::{post, web, error, HttpRequest, Responder, Result as ActixWebResult};
 use cargo::{
-    core::{compiler::CompileMode, Shell, Workspace},
+    core::{compiler::CompileMode, Workspace},
     ops::{self, CompileOptions, NewOptions},
     util::{
-        config::{ConfigValue, Definition},
         Config,
     },
 };
 use futures::TryFutureExt;
-use log::{debug, info};
+use log::{info};
 use proc_macro2::Span;
 use quote::quote;
 use reqwest::Client;
@@ -18,6 +17,8 @@ use std::{
     fs::{metadata, File},
     path::Path,
 };
+// use anyhow::Result;
+use thiserror::Error;
 use std::{env, fs::read_to_string, io::Read};
 use std::{io::Write, sync::Mutex};
 use syn::fold::Fold;
@@ -45,23 +46,42 @@ struct CompileReq {
 struct CompileResponse {
     stdout: String,
 }
+#[derive(Error, Debug)]
+pub enum CompileError {
+    #[error("Failed to build the given source code")]
+    BuildBinaryError {
+
+    },
+    #[error("Unable to retrieve worker client app data")]
+    RetrieveAppDataFailure {
+        
+    },
+    #[error("Failed to lock the worker client mutex")]
+    LockMutexError {
+
+    },
+
+    
+}
+impl error::ResponseError for CompileError {}
+
 #[post("/compile")]
 async fn compile_handler(
     compile_req: web::Json<CompileReq>,
     worker_client: HttpRequest,
-) -> Result<impl Responder> {
+) -> Result<impl Responder, CompileError> {
     let built_binary = create_compile_sandbox(compile_req.code.clone()).await;
 
     let request = serde_json::json!({
         "built_binary":built_binary,
     });
     let client = &worker_client
-        .app_data::<web::Data<WorkerClient>>()
-        .unwrap()
+        .app_data::<web::Data<WorkerClient>>().ok_or(CompileError::RetrieveAppDataFailure{})?
         .client;
 
     let stdout = client
         .lock()
+        // .map_err(CompileError::LockMutexError{})?
         .unwrap()
         .post(WORKER_URL)
         .json(&request)

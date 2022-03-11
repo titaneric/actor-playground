@@ -1,7 +1,8 @@
-use actix_web::{post, web, HttpResponse,Responder, Result};
+use actix_web::{post, web, HttpResponse, Responder, Result};
 use futures::StreamExt;
 use log::info;
 use serde::{Deserialize, Serialize};
+use std::borrow::Borrow;
 use std::fs::OpenOptions;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
@@ -12,7 +13,33 @@ use std::{
 };
 use tempdir::TempDir;
 use tokio::process::Command;
+use runner::runner_server::{Runner, RunnerServer};
+use runner::{ExecuteRequest, ExecuteResponse};
+use tonic::{transport::Server, Request as TonicRequest, Response as TonicResponse, Status};
 
+pub mod runner {
+    tonic::include_proto!("runner");
+}
+
+#[derive(Debug, Default)]
+pub struct RunnerImpl {}
+
+#[tonic::async_trait]
+impl Runner for RunnerImpl {
+    async fn execute(
+        &self,
+        request: TonicRequest<ExecuteRequest>, // Accept request of type HelloRequest
+    ) -> Result<TonicResponse<ExecuteResponse>, Status> { // Return an instance of type HelloReply
+        println!("Got a binary size is: {:?}", request.get_ref().binary.len());
+
+        let reply = ExecuteResponse {
+            stdout: "".to_string(),
+            stderr: "".to_string(),
+        };
+
+        Ok(TonicResponse::new(reply)) // Send back our formatted greeting
+    }
+}
 #[derive(Deserialize)]
 struct RunReq {
     built_binary: Vec<u8>,
@@ -21,6 +48,8 @@ struct RunReq {
 struct RunResponse {
     stdout: String,
 }
+
+
 #[post("/run")]
 async fn run_handler(mut body: web::Payload) -> Result<impl Responder> {
     let mut bytes = web::BytesMut::new();
@@ -40,7 +69,9 @@ async fn run_handler(mut body: web::Payload) -> Result<impl Responder> {
     // info!("{:?}", std::str::from_utf8(&output.stderr));
     // info!("{:?}", output.status);
 
-    Ok(web::Json(RunResponse{stdout: stdout.to_string()}))
+    Ok(web::Json(RunResponse {
+        stdout: stdout.to_string(),
+    }))
 }
 fn write_byte_stream(buf: &[u8], filename: &str) -> PathBuf {
     let tmp_dir = TempDir::new("rust-run").unwrap();
