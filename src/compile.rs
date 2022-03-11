@@ -14,6 +14,7 @@ use std::{
     collections::HashMap,
     fs::{metadata, File},
     path::Path,
+    task::Poll,
 };
 // use anyhow::Result;
 use runner::runner_client::RunnerClient;
@@ -28,6 +29,8 @@ use syn::{token::Pub, VisPublic, Visibility};
 use syn::{File as SynFile, ItemFn};
 use tempdir::TempDir;
 use thiserror::Error;
+use tokio::fs::File as TokioFile;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tonic::transport;
 pub mod runner {
     tonic::include_proto!("runner");
@@ -75,7 +78,9 @@ async fn compile_handler(
     worker_client: web::Data<Arc<Mutex<WorkerClient>>>,
 ) -> Result<impl Responder, CompileError> {
     info!("{:?}", compile_req.code.as_str());
-    let built_binary = create_compile_sandbox(compile_req.code.clone()).await;
+    let binary_path = create_compile_sandbox(compile_req.code.clone()).await;
+    let built_binary = get_file_as_byte_vec(&binary_path).await;
+
     let mut client = worker_client.lock().unwrap().client.clone();
     let request = tonic::Request::new(ExecuteRequest {
         binary: built_binary,
@@ -86,18 +91,18 @@ async fn compile_handler(
     info!("{:?}", response);
     Ok("ok")
 }
-fn get_file_as_byte_vec(filename: &str) -> Vec<u8> {
-    let mut f = File::open(&filename).expect("no file found");
-    let metadata = metadata(&filename).expect("unable to read metadata");
+async fn get_file_as_byte_vec(filename: &str) -> Vec<u8> {
+    let mut binary_path = TokioFile::open(&filename).await.unwrap();
+    let metadata = binary_path.metadata().await.unwrap();
     let mut buffer = vec![0; metadata.len() as usize];
-    f.read_exact(&mut buffer).expect("buffer overflow");
+    binary_path.read_exact(&mut buffer).await.unwrap();
     buffer
 }
-fn write_src_code(src_code: String, filename: &Path) {
-    let mut f = File::create(&filename).expect("no file found");
-    f.write_all(&src_code.into_bytes()).unwrap();
+async fn write_src_code(src_code: String, filename: &Path) {
+    let mut f = TokioFile::create(&filename).await.unwrap();
+    f.write_all(&src_code.into_bytes()).await.unwrap();
 }
-async fn create_compile_sandbox(src_code: String) -> Vec<u8> {
+async fn create_compile_sandbox(src_code: String) -> String {
     // create tmp cargo package
     let tmp_dir = TempDir::new("rust-build").unwrap();
 
@@ -121,11 +126,13 @@ async fn create_compile_sandbox(src_code: String) -> Vec<u8> {
     write_src_code(
         modified_main_fn,
         cargo_tmp.as_path().join("src").join("lib.rs").as_path(),
-    );
+    )
+    .await;
     write_src_code(
         String::from(PLAYGROUND_MAIN_FN),
         cargo_tmp.as_path().join("src").join("main.rs").as_path(),
-    );
+    )
+    .await;
 
     // build it
     let manifest_path = cargo_tmp.join("Cargo.toml");
@@ -138,7 +145,8 @@ async fn create_compile_sandbox(src_code: String) -> Vec<u8> {
         .map(|unit_output| unit_output.path.to_str().unwrap())
         .collect::<Vec<&str>>();
 
-    get_file_as_byte_vec(&String::from(built_binary_paths[0]))
+    // get_file_as_byte_vec(&String::from(built_binary_paths[0]))
+    String::from(built_binary_paths[0])
 }
 
 struct PublicizeMainFn;
