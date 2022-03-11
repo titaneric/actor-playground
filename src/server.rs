@@ -1,43 +1,29 @@
 mod compile;
 use actix_web::{get, middleware, web, App, HttpResponse, HttpServer, Responder};
-use runner::runner_client::{RunnerClient};
-use runner::{ExecuteRequest, ExecuteResponse};
-use tonic::{transport::Server, Request as TonicRequest, Response as TonicResponse, Status};
+use compile::runner::runner_client::RunnerClient;
+use compile::runner::{ExecuteRequest, ExecuteResponse};
+use log::info;
+use std::sync::Arc;
+use std::{env, fs::read_to_string, io::Read};
+use std::{io::Write, sync::Mutex};
 
-pub mod runner {
-    tonic::include_proto!("runner");
-}
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    std::env::set_var("RUST_LOG", "info");
+    env_logger::init();
 
-// #[actix_web::main]
-// async fn main() -> std::io::Result<()> {
-//     std::env::set_var("RUST_LOG", "info");
-//     env_logger::init();
-//     let wc = web::Data::new(compile::WorkerClient::new());
+    let wc = Arc::new(Mutex::new(compile::WorkerClient::new().await));
 
-//     HttpServer::new(move || {
-//         App::new()
-//             .app_data(wc.clone())
-//             .wrap(middleware::Logger::default())
-//             .service(hello)
-//             .service(compile::compile_handler)
-//     })
-//     .bind(("127.0.0.1", 8080))?
-//     .run()
-//     .await
-// }
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut client = RunnerClient::connect("http://[::1]:50051").await?;
-
-    let request = tonic::Request::new(ExecuteRequest {
-        binary: "Tonic".into(),
-    });
-
-    let response = client.execute(request).await?;
-
-    println!("RESPONSE={:?}", response);
-
-    Ok(())
+    HttpServer::new(move || {
+        App::new()
+            .app_data(web::Data::new(wc.clone()))
+            .wrap(middleware::Logger::default())
+            .service(hello)
+            .service(compile::compile_handler)
+    })
+    .bind(("127.0.0.1", 8080))?
+    .run()
+    .await
 }
 
 #[get("/")]

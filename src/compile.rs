@@ -1,13 +1,11 @@
-use actix_web::{post, web, error, HttpRequest, Responder, Result as ActixWebResult};
+use actix_web::{error, post, web, HttpRequest, Responder, Result as ActixWebResult};
 use cargo::{
     core::{compiler::CompileMode, Workspace},
     ops::{self, CompileOptions, NewOptions},
-    util::{
-        Config,
-    },
+    util::Config,
 };
 use futures::TryFutureExt;
-use log::{info};
+use log::info;
 use proc_macro2::Span;
 use quote::quote;
 use reqwest::Client;
@@ -18,21 +16,35 @@ use std::{
     path::Path,
 };
 // use anyhow::Result;
-use thiserror::Error;
+use runner::runner_client::RunnerClient;
+use runner::{ExecuteRequest, ExecuteResponse};
 use std::{env, fs::read_to_string, io::Read};
-use std::{io::Write, sync::Mutex};
+use std::{
+    io::Write,
+    sync::{Arc, Mutex},
+};
 use syn::fold::Fold;
 use syn::{token::Pub, VisPublic, Visibility};
 use syn::{File as SynFile, ItemFn};
 use tempdir::TempDir;
+use thiserror::Error;
+use tonic::transport;
+pub mod runner {
+    tonic::include_proto!("runner");
+}
 pub struct WorkerClient {
-    pub client: Mutex<Client>,
+    pub client: RunnerClient<transport::Channel>,
 }
 
 impl WorkerClient {
-    pub fn new() -> WorkerClient {
+    pub async fn new() -> WorkerClient {
         WorkerClient {
-            client: Mutex::new(Client::new()),
+            client: RunnerClient::new(
+                transport::Channel::from_static("http://[::1]:50051")
+                    .connect()
+                    .await
+                    .unwrap(),
+            ),
         }
     }
 }
@@ -49,49 +61,30 @@ struct CompileResponse {
 #[derive(Error, Debug)]
 pub enum CompileError {
     #[error("Failed to build the given source code")]
-    BuildBinaryError {
-
-    },
+    BuildBinaryError {},
     #[error("Unable to retrieve worker client app data")]
-    RetrieveAppDataFailure {
-        
-    },
+    RetrieveAppDataFailure {},
     #[error("Failed to lock the worker client mutex")]
-    LockMutexError {
-
-    },
-
-    
+    LockMutexError {},
 }
 impl error::ResponseError for CompileError {}
 
 #[post("/compile")]
 async fn compile_handler(
     compile_req: web::Json<CompileReq>,
-    worker_client: HttpRequest,
+    worker_client: web::Data<Arc<Mutex<WorkerClient>>>,
 ) -> Result<impl Responder, CompileError> {
+    info!("{:?}", compile_req.code.as_str());
     let built_binary = create_compile_sandbox(compile_req.code.clone()).await;
-
-    let request = serde_json::json!({
-        "built_binary":built_binary,
+    let mut client = worker_client.lock().unwrap().client.clone();
+    let request = tonic::Request::new(ExecuteRequest {
+        binary: built_binary,
     });
-    let client = &worker_client
-        .app_data::<web::Data<WorkerClient>>().ok_or(CompileError::RetrieveAppDataFailure{})?
-        .client;
 
-    let stdout = client
-        .lock()
-        // .map_err(CompileError::LockMutexError{})?
-        .unwrap()
-        .post(WORKER_URL)
-        .json(&request)
-        .send()
-        .await
-        .unwrap();
-    let res = stdout.json::<CompileResponse>().await.unwrap();
+    let response = client.execute(request).await.unwrap();
 
-    // info!("Welcome {}!", compile_req.code);
-    Ok(web::Json(res))
+    info!("{:?}", response);
+    Ok("ok")
 }
 fn get_file_as_byte_vec(filename: &str) -> Vec<u8> {
     let mut f = File::open(&filename).expect("no file found");
