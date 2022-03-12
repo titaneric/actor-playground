@@ -4,7 +4,8 @@ use cargo::{
     ops::{self, CompileOptions, NewOptions},
     util::Config,
 };
-use futures::TryFutureExt;
+use futures::stream::Stream as FutureStream;
+use futures::{Stream, TryFutureExt};
 use log::info;
 use proc_macro2::Span;
 use quote::quote;
@@ -31,7 +32,10 @@ use tempdir::TempDir;
 use thiserror::Error;
 use tokio::fs::File as TokioFile;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_stream::StreamExt;
+use tokio_util::io::ReaderStream;
 use tonic::transport;
+
 pub mod runner {
     tonic::include_proto!("runner");
 }
@@ -60,6 +64,7 @@ struct CompileReq {
 #[derive(Deserialize, Serialize)]
 struct CompileResponse {
     stdout: String,
+    stderr: String,
 }
 #[derive(Error, Debug)]
 pub enum CompileError {
@@ -72,24 +77,40 @@ pub enum CompileError {
 }
 impl error::ResponseError for CompileError {}
 
+fn bytes_stream(f: TokioFile) -> impl FutureStream<Item = ExecuteRequest> {
+    ReaderStream::new(f).map(|f| ExecuteRequest {
+        binary: (f.unwrap().bytes())
+            .into_iter()
+            .map(|b| b.unwrap())
+            .collect::<Vec<u8>>(),
+    })
+}
+
 #[post("/compile")]
 async fn compile_handler(
     compile_req: web::Json<CompileReq>,
     worker_client: web::Data<Arc<Mutex<WorkerClient>>>,
 ) -> Result<impl Responder, CompileError> {
     info!("{:?}", compile_req.code.as_str());
-    let binary_path = create_compile_sandbox(compile_req.code.clone()).await;
-    let built_binary = get_file_as_byte_vec(&binary_path).await;
-
     let mut client = worker_client.lock().unwrap().client.clone();
-    let request = tonic::Request::new(ExecuteRequest {
-        binary: built_binary,
-    });
+    let binary_path = create_compile_sandbox(compile_req.code.clone()).await;
+    let mut f = TokioFile::open(&binary_path).await.unwrap();
+    // let mut stream: Vec<ExecuteRequest> =  ReaderStream::new(f).map(|f|ExecuteRequest{binary_path: &f.unwrap().bytes()}).collect();
+    //     let built_binary = get_file_as_byte_vec(&binary_path).await;
+    // let request = tonic::Request::new(ExecuteRequest {
+    //     binary: built_binary,
+    // });
+    let stream = bytes_stream(f);
 
-    let response = client.execute(request).await.unwrap();
+    let response = client.execute(stream).await.unwrap();
 
-    info!("{:?}", response);
-    Ok("ok")
+    let response = CompileResponse {
+        stdout: response.get_ref().stdout.to_owned(),
+        stderr: response.get_ref().stderr.to_owned(),
+    };
+
+    // info!("{:?}", response);
+    Ok(web::Json::<CompileResponse>(response))
 }
 async fn get_file_as_byte_vec(filename: &str) -> Vec<u8> {
     let mut binary_path = TokioFile::open(&filename).await.unwrap();

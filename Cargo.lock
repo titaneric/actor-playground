@@ -223,6 +223,7 @@ dependencies = [
  "actix",
  "actix-web",
  "anyhow",
+ "bytes",
  "cargo",
  "env_logger",
  "futures",
@@ -238,6 +239,8 @@ dependencies = [
  "tempdir",
  "thiserror",
  "tokio",
+ "tokio-stream",
+ "tokio-util 0.7.0",
  "tonic",
  "tonic-build",
 ]

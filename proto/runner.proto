@@ -17,7 +17,7 @@ syntax = "proto3";
 package runner;
 
 service Runner {
-  rpc Execute (ExecuteRequest) returns (ExecuteResponse) {}
+  rpc Execute (stream ExecuteRequest) returns (ExecuteResponse) {}
 }
 
 message ExecuteRequest {
