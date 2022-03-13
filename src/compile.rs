@@ -78,12 +78,25 @@ pub enum CompileError {
 impl error::ResponseError for CompileError {}
 
 fn bytes_stream(f: TokioFile) -> impl FutureStream<Item = ExecuteRequest> {
-    ReaderStream::new(f).map(|f| ExecuteRequest {
+    ReaderStream::with_capacity(f, 1 << 20).map(|f| ExecuteRequest {
         binary: (f.unwrap().bytes())
             .into_iter()
             .map(|b| b.unwrap())
             .collect::<Vec<u8>>(),
     })
+}
+async fn manually_bytes_stream(mut f: TokioFile) -> impl FutureStream<Item = ExecuteRequest> {
+    const BUF_SIZE: usize = 1 << 20;
+    let mut buf = vec![0; BUF_SIZE];
+    async_stream::stream! {
+    loop {
+        match f.read(&mut buf).await {
+            Ok(0) => return,
+            Ok(n) => {info!("read buf size is {}", n);yield ExecuteRequest{binary: (&buf[..n]).to_vec()}},
+            Err(_) => return,
+        }
+
+    }}
 }
 
 #[post("/compile")]
@@ -94,13 +107,15 @@ async fn compile_handler(
     info!("{:?}", compile_req.code.as_str());
     let mut client = worker_client.lock().unwrap().client.clone();
     let binary_path = create_compile_sandbox(compile_req.code.clone()).await;
-    let mut f = TokioFile::open(&binary_path).await.unwrap();
+    let f = TokioFile::open(&binary_path).await.unwrap();
     // let mut stream: Vec<ExecuteRequest> =  ReaderStream::new(f).map(|f|ExecuteRequest{binary_path: &f.unwrap().bytes()}).collect();
     //     let built_binary = get_file_as_byte_vec(&binary_path).await;
     // let request = tonic::Request::new(ExecuteRequest {
     //     binary: built_binary,
     // });
-    let stream = bytes_stream(f);
+    info!("{:?}", f.metadata().await.unwrap().len());
+    // let stream = bytes_stream(f);
+    let stream = manually_bytes_stream(f).await;
 
     let response = client.execute(stream).await.unwrap();
 

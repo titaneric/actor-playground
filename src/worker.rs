@@ -1,16 +1,19 @@
 mod run;
 use actix_web::{get, middleware, App, HttpResponse, HttpServer, Responder};
-use run::runner::runner_server::{RunnerServer};
+use run::runner::runner_server::RunnerServer;
 use run::RunnerImpl;
 use tonic::transport::Server;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    std::env::set_var("RUST_LOG", "info");
+    env_logger::init();
     let addr = "[::1]:50051".parse()?;
     let greeter = RunnerImpl::default();
+    let service = RunnerServer::new(greeter);
 
     Server::builder()
-        .add_service(RunnerServer::new(greeter))
+        .add_service(service)
         .serve(addr)
         .await?;
 
